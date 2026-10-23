@@ -263,6 +263,45 @@ import Synchronization
         #expect(kept > 0 && kept < 40)
     }
 
+    @Test(arguments: [
+        #"{"type": "Point", "coordinates": [1, 2]}"#,
+        #"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [0, 0]]]}"#,
+        #"{"type": "MultiPolygon", "coordinates": []}"#
+    ])
+    func invalidGeoJsonIsRejected(json: String) {
+        #expect(throws: (any Error).self) { try SyncPolygon(geoJson: Data(json.utf8)) }
+    }
+
+    func polygon(_ json: String) throws -> SyncBoundingBox {
+        var polygon = try SyncPolygon(geoJson: Data(json.utf8))
+        return try SyncBoundingBox(grid: grid) { polygon.contains(latitude: Double($0), longitude: Double($1)) }
+    }
+
+    @Test func polygonCells() throws {
+        /// Rows and columns 2 to 6, 25 cells
+        let square = try polygon(#"{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[1.5, 1.5], [6.5, 1.5], [6.5, 6.5], [1.5, 6.5], [1.5, 1.5]]]}}"#)
+        #expect(bounds(square).rows == 2 ... 6 && bounds(square).columns == 2 ... 6)
+        #expect(square.selectedCells.count(where: { $0 }) == 25)
+
+        /// The outer ring holds columns 1 to 13 and rows 1 to 10 (130 cells), the hole columns 3 to 12 and rows 3 to 9 (70 cells)
+        let hole = try polygon(#"{"type": "Polygon", "coordinates": [[[0.5, 0.5], [13.5, 0.5], [13.5, 10.5], [0.5, 10.5], [0.5, 0.5]], [[2.5, 2.5], [12.5, 2.5], [12.5, 9.5], [2.5, 9.5], [2.5, 2.5]]]}"#)
+        #expect(hole.selectedCells.count(where: { $0 }) == 130 - 70)
+        #expect(!(3 ..< 10).contains { y in (3 ..< 13).contains { hole.selectedCells[y * 15 + $0] } })
+        #expect(hole.selectedCells[3 * 15 + 2] && hole.selectedCells[2 * 15 + 3])
+
+        /// Each square holds one cell centre: (0, 0) and (9, 9)
+        let two = try polygon(#"{"type": "MultiPolygon", "coordinates": [[[[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5], [-0.5, -0.5]]], [[[8.5, 8.5], [9.5, 8.5], [9.5, 9.5], [8.5, 9.5], [8.5, 8.5]]]]}"#)
+        #expect(two.selectedCells.count(where: { $0 }) == 2 && two.selectedCells[0] && two.selectedCells[9 * 15 + 9])
+        #expect(throws: (any Error).self) { try polygon(#"{"type": "Polygon", "coordinates": [[[50, 50], [51, 50], [51, 51], [50, 50]]]}"#) }
+    }
+
+    /// A rectangle selects the same cells as the box with the same corners, on its edges too: lower bound in, upper bound out
+    @Test func rectangleSelectsTheCellsOfTheBox() throws {
+        let box = BoundingBoxWGS84(latitude: 2 ..< 6, longitude: 3 ..< 8)
+        let rectangle = try polygon(#"{"type": "Polygon", "coordinates": [[[3, 2], [8, 2], [8, 6], [3, 6], [3, 2]]]}"#)
+        #expect(rectangle.selectedCells == SyncBoundingBox.selectedCells(grid: grid, box: box))
+    }
+
     /// Legacy files store `[ny * nx, time]` as a flat 2D array
     @Test func legacyFlatFileKeepsLayoutAndMasksChunks() async throws {
         let keep = try SyncBoundingBox(grid: grid, box: BoundingBoxWGS84(latitude: 5 ..< 6.5, longitude: 7 ..< 8.5))
